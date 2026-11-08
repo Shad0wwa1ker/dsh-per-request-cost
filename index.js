@@ -45,15 +45,32 @@ const SERVICE_PRICE = 5 / 1000;
 const SERVICE_BILLING_START = Date.parse('2026-10-31T16:00:00Z');
 
 /**
- * Engines that resolve to DeepSeek's own search API, the only one the platform
- * bills (¥5 per 1,000 requests). Everything else — Tavily, Bing, Exa, DuckDuckGo
- * and the rest of the free-search plugin's third-party engines — is free, so a
- * search that lands on one of those must not add the per-request fee.
+ * Engines and providers that resolve to DeepSeek's own web APIs, the only ones
+ * the platform bills (¥5 per 1,000 requests). Everything else — Tavily, Bing,
+ * Exa, DuckDuckGo, the free-search plugin's own providers, and the local HTTP
+ * fetcher — is free, so a request they serve must never add the per-request fee.
+ *
+ * The two id spaces differ. `dsh-free-search` writes the engine that answered
+ * into its result header and registers its providers under their own ids (`ddg`
+ * for search, `fs-quality-fetch` for fetch); the bundled DeepSeek web plugins
+ * register `deepseek-official`, `deepseek-search-api`, and `deepseek-fetch-api`.
  */
 const DEEPSEEK_SEARCH_ENGINES = new Set([
   'deepseek-tools',
   'deepseek-official',
   'deepseek-search-api',
+  'deepseek',
+]);
+
+const DEEPSEEK_SEARCH_PROVIDERS = new Set([
+  'deepseek-official',
+  'deepseek-search-api',
+  'deepseek-tools',
+  'deepseek',
+]);
+
+const DEEPSEEK_FETCH_PROVIDERS = new Set([
+  'deepseek-fetch-api',
   'deepseek',
 ]);
 
@@ -90,7 +107,8 @@ function resultText(data) {
 /**
  * The engine that answered a search, read from the free-search result header
  * (`Search (tavily, timeRange=day):`, `Multi-Search (multi):`). Returns null for
- * results without a header, which are the core DSH tool's DeepSeek results.
+ * results without a header, which come from the core DSH tool and are judged by
+ * the provider its web seam selects.
  */
 function searchEngineName(text) {
   const match = /^(?:Multi-)?Search \(([^)]*)\)/m.exec(text);
@@ -100,30 +118,74 @@ function searchEngineName(text) {
 }
 
 /**
- * Whether one web tool result corresponds to a billable API request.
+ * Read the provider id the web seam would select for `kind` right now.
  *
- * Search charges only when DeepSeek's own search engine answered; third-party
- * engines of the free-search plugin are free, so their results never add the
- * per-request fee. Search charges only for non-empty result lists; Fetch charges
- * only when the API returned page content with HTTP 200. Anything that looks
- * like a failure is not billed.
+ * A tool result carries no provider id, so for a core `web_search` result — the
+ * one with no engine header — the seam's own selection is the only way to tell
+ * a request DeepSeek served from one a free engine served. Selection throws when
+ * no provider is usable, the configured one is missing, or several are; none of
+ * those reached DeepSeek, so they read as "not DeepSeek" rather than as a
+ * charge. A missing seam (`ctx.get`) reads the same way.
+ *
+ * @param ctx - the plugin context, used to reach the `web` service lazily.
+ * @returns a function mapping `'search'`/`'fetch'` onto the selected provider id or null.
  */
-function billableRequests(kind, data, text) {
-  if (data?.message?.isError === true) return 0;
-  if (kind === 'search') {
-    const engine = searchEngineName(text);
-    if (engine !== null && !DEEPSEEK_SEARCH_ENGINES.has(engine)) return 0;
-    if (engine === null && !text.startsWith('External web content follows')) return 0;
-    const hasSources = text.includes('Sources:');
-    return !hasSources && text.includes('No results found.') ? 0 : 1;
-  }
+export function createProviderProbe(ctx) {
+  const service = () => {
+    try {
+      const web = typeof ctx.get === 'function' ? ctx.get('web') : undefined;
+      return web !== null && typeof web === 'object' ? web : null;
+    } catch {
+      return null;
+    }
+  };
+  return (kind) => {
+    const web = service();
+    const method = kind === 'fetch' ? 'selectFetchProvider' : 'selectSearchProvider';
+    if (web === null || typeof web[method] !== 'function') return null;
+    try {
+      const provider = web[method]();
+      return typeof provider?.id === 'string' ? provider.id : null;
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * Whether one web tool result carries a delivered answer or page.
+ *
+ * Search delivers a non-empty result list; Fetch delivers a 2xx page. Anything
+ * that looks like a failure — an error result, an empty search, a non-2xx
+ * fetch — is not a request worth counting.
+ */
+function deliveredResult(kind, data, text) {
+  if (data?.message?.isError === true) return false;
+  if (kind === 'search') return text.includes('Sources:') || !text.includes('No results found.');
   if (kind === 'fetch') {
     const match = /\(HTTP (\d{3})\)/.exec(text);
-    if (match === null) return 0;
+    if (match === null) return false;
     const status = Number(match[1]);
-    return status >= 200 && status < 300 ? 1 : 0;
+    return status >= 200 && status < 300;
   }
-  return 0;
+  return false;
+}
+
+/**
+ * Whether DeepSeek itself served the request, which is what the platform bills.
+ *
+ * A result header names the engine that answered, and reading it is enough. Without
+ * one the request went through the core tool, which never records a provider, so
+ * the seam's selected provider id decides. Anything unknown is free: a third-party
+ * search must never be charged.
+ */
+function deepSeekServed(kind, engine, providerId) {
+  if (kind === 'search') {
+    if (engine !== null) return DEEPSEEK_SEARCH_ENGINES.has(engine);
+    return providerId !== null && DEEPSEEK_SEARCH_PROVIDERS.has(providerId);
+  }
+  if (kind === 'fetch') return providerId !== null && DEEPSEEK_FETCH_PROVIDERS.has(providerId);
+  return false;
 }
 
 const holidayDays = new Set(FALLBACK_HOLIDAYS);
@@ -291,8 +353,10 @@ export function init() {
  *
  * @param state - previous whole state.
  * @param event - committed session event with `type`, `time`, `data`.
+ * @param probe - provider lookup from `createProviderProbe`, or null to treat
+ *   every request without an engine header as free.
  */
-export function fold(state, event) {
+export function fold(state, event, probe = null) {
   switch (event.type) {
     case 'model/selection': {
       const model = event.data?.model;
@@ -363,10 +427,14 @@ export function fold(state, event) {
       const pending = { ...state.pending };
       delete pending[callId];
       const text = resultText(event.data);
+      const delivered = deliveredResult(entry.kind, event.data, text);
       const engine = entry.kind === 'search' ? searchEngineName(text) : null;
-      const free = engine !== null && !DEEPSEEK_SEARCH_ENGINES.has(engine)
-        && event.data?.message?.isError !== true;
-      const billable = free ? 0 : billableRequests(entry.kind, event.data, text) === 1 ? entry.count : 0;
+      const providerId = probe === null ? null : probe(entry.kind);
+      const served = delivered && deepSeekServed(entry.kind, engine, providerId);
+      // A delivered search DeepSeek did not serve is still shown in the tooltip as
+      // a free request; a fetch nobody bills leaves no trace at all.
+      const free = entry.kind === 'search' && delivered && !served;
+      const billable = served ? entry.count : 0;
       if (billable === 0 && !free) return { ...state, pending };
       const charged = typeof entry.at === 'number' && entry.at >= SERVICE_BILLING_START
         ? billable * SERVICE_PRICE
@@ -397,10 +465,10 @@ const views = new WeakMap();
 
 export const sessionCostProjection = {
   key: 'sessionCost',
-  stateVersion: 3,
+  stateVersion: 4,
   stateSchema: passthrough,
   init,
-  apply: fold,
+  apply: (state, event) => fold(state, event, null),
   wire: {
     viewSchema: passthrough,
     view: (state) => {
@@ -426,11 +494,21 @@ export const sessionCostProjection = {
   },
 };
 
+/**
+ * The projection as registered: the description above, with a fold that knows
+ * which provider served each request. Reading the seam keeps one session's
+ * counters honest after the provider is switched in the profile.
+ */
+export function projectionFor(ctx) {
+  const probe = createProviderProbe(ctx);
+  return { ...sessionCostProjection, apply: (state, event) => fold(state, event, probe) };
+}
+
 export function apply(ctx) {
   try {
     ctx.inject(['sessionProjections'], (scope) => {
       try {
-        scope.sessionProjections.register(sessionCostProjection);
+        scope.sessionProjections.register(projectionFor(scope));
       } catch (error) {
         console.error('[per-request-cost] sessionCost projection registration failed', error);
       }

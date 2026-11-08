@@ -1,9 +1,9 @@
 {
   "name": "dsh-per-request-cost",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "type": "module",
-  "description": "Composer pill showing the DeepSeek account balance, the current peak/off-peak phase, and this session's spend priced request by request, with subagent sessions and Search/Fetch fees included.",
+  "description": "Composer pill showing the DeepSeek account balance, the current peak/off-peak phase, and this session's spend priced request by request, with subagent sessions and DeepSeek Search/Fetch fees included.",
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Per-request cost",
-    "description": "Shows the account balance, the live peak/off-peak phase, and this session's spend priced request by request, subagent sessions and Search/Fetch included."
+    "description": "Shows the account balance, the live peak/off-peak phase, and this session's spend priced request by request, subagent sessions and DeepSeek Search/Fetch included."
   }
 }

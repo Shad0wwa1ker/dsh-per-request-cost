@@ -242,9 +242,11 @@ window.__ModuleLoader__.load({
         'cost.inline': '本次 {amount}',
         'cost.title': '本会话估算：命中 {hit} tok／未命中 {miss} tok／输出 {out} tok，按 deepseek-flash {phase}价。跨峰谷的历史请求按当前时段统一计价。',
         'cost.exact.title': '本会话逐请求计价：命中 {hit} tok／未命中 {miss} tok／输出 {out} tok，每条请求按其发生时的峰谷价计。',
-        'cost.services': 'Search {search} 次（DeepSeek）· Fetch {fetch} 次，另计 {amount}',
-        'cost.services.free': 'Search {search} 次（DeepSeek）· Fetch {fetch} 次，11 月 1 日前免费',
-        'cost.services.thirdParty': '另有 {free} 次第三方引擎搜索，不计费',
+        'cost.services.search': 'DeepSeek Search {search} 次',
+        'cost.services.fetch': 'DeepSeek Fetch {fetch} 次',
+        'cost.services.billed': '{parts}，另计 {amount}',
+        'cost.services.free': '{parts}，11 月 1 日前免费',
+        'cost.services.thirdParty': '另有 {free} 次未走 DeepSeek 的搜索，不计费',
         'cost.children': '含 {count} 个子会话 {amount}',
         'cost.children.pending': '另有 {count} 个子会话尚未加载',
         'settings.title': '刷新频率',
@@ -268,9 +270,11 @@ window.__ModuleLoader__.load({
         'cost.inline': 'Session {amount}',
         'cost.title': 'Session estimate: {hit} hit / {miss} miss / {out} output tokens at deepseek-flash {phase} rates. Requests spanning both windows are priced uniformly at the current one.',
         'cost.exact.title': 'Session priced per request: {hit} hit / {miss} miss / {out} output tokens, each at the phase in effect when it was sent.',
-        'cost.services': 'Search {search} · Fetch {fetch} (DeepSeek), {amount} extra',
-        'cost.services.free': 'Search {search} · Fetch {fetch} (DeepSeek), free until Nov 1',
-        'cost.services.thirdParty': '{free} more searches on third-party engines, not billed',
+        'cost.services.search': 'DeepSeek Search {search}',
+        'cost.services.fetch': 'DeepSeek Fetch {fetch}',
+        'cost.services.billed': '{parts}, {amount} extra',
+        'cost.services.free': '{parts}, free until Nov 1',
+        'cost.services.thirdParty': '{free} more searches not served by DeepSeek, not billed',
         'cost.children': 'Includes {count} subagent sessions: {amount}',
         'cost.children.pending': '{count} more subagent sessions not loaded yet',
         'settings.title': 'Refresh rate',
@@ -510,12 +514,17 @@ window.__ModuleLoader__.load({
             out: formatTokens(usage.outputTokens || 0),
             phase,
           });
-        const serviceRequests = exact ? (exact.searchRequests || 0) + (exact.fetchRequests || 0) : 0;
-        const serviceDetail = serviceRequests === 0
+        const serviceParts = [];
+        if (exact && (exact.searchRequests || 0) > 0) {
+          serviceParts.push(t('cost.services.search', { search: formatTokens(exact.searchRequests) }));
+        }
+        if (exact && (exact.fetchRequests || 0) > 0) {
+          serviceParts.push(t('cost.services.fetch', { fetch: formatTokens(exact.fetchRequests) }));
+        }
+        const serviceDetail = serviceParts.length === 0
           ? null
-          : t(exact.serviceCost > 0 ? 'cost.services' : 'cost.services.free', {
-            search: formatTokens(exact.searchRequests || 0),
-            fetch: formatTokens(exact.fetchRequests || 0),
+          : t(exact.serviceCost > 0 ? 'cost.services.billed' : 'cost.services.free', {
+            parts: serviceParts.join(' · '),
             amount: formatCost(exact.serviceCost || 0),
           });
         const freeSearches = exact ? (exact.searchFree || 0) : 0;

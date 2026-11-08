@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "逐请求计价",
-    "description": "显示账户余额、实时峰谷时段，以及按每条请求发出时刻计价的本会话花费（含子会话与 Search/Fetch）。"
+    "description": "显示账户余额、实时峰谷时段，以及按每条请求发出时刻计价的本会话花费（含子会话与 DeepSeek Search/Fetch）。"
   }
 }
